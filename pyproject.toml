@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyimpact"
+version = "0.1.0"
+description = "Static change-impact analysis for Python codebases via AST, import and call graphs."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "networkx>=3.0",
+    "click>=8.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+pyimpact = "pyimpact.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pyimpact*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
