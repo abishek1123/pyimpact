@@ -16,6 +16,9 @@ dist/
 .mypy_cache/
 .tox/
 
+# Integration-test fixtures (cloned third-party repos, not part of this project)
+fixtures/
+
 # Editor / OS
 .vscode/
 .idea/
