@@ -158,6 +158,47 @@ def _run_explain(repo_path: str, target: str, limit: int,
 cli.add_command(analyze_cmd, name="analyze")
 
 
+@cli.command(name="summarize")
+@click.argument("repo_path", type=click.Path(exists=True, file_okay=False))
+@click.option(
+    "--target",
+    "-t",
+    required=True,
+    help="Function/method (or module) to summarize, e.g. 'pkg.mod:func'.",
+)
+@click.option(
+    "--model",
+    default=None,
+    help="Gemini model (default: gemini-2.0-flash or $GEMINI_MODEL).",
+)
+def summarize_cmd(repo_path: str, target: str, model: str | None) -> None:
+    """Summarize TARGET using its position in the dependency graph."""
+    from .summarize import summarize_target
+
+    try:
+        result = summarize_target(repo_path, target, model=model)
+    except RuntimeError as exc:  # missing key / missing google-genai
+        raise click.ClickException(str(exc))
+
+    if result is None:
+        raise click.ClickException(
+            f"Could not resolve target '{target}' in {repo_path}."
+        )
+
+    ctx = result.context
+    click.echo(f"Summary of {click.style(result.node, bold=True)}\n")
+    click.echo(result.text or "(no summary returned)")
+    click.echo(
+        click.style(
+            f"\nGraph position: called by {len(ctx.callers)}, "
+            f"calls {len(ctx.callees)}, "
+            f"blast radius {ctx.dependents_total} "
+            f"({ctx.dependents_functions} functions)",
+            fg="cyan",
+        )
+    )
+
+
 def main() -> None:  # console-script entry point
     cli()
 

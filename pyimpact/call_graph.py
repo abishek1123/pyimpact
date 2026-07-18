@@ -140,7 +140,8 @@ class CallGraphBuilder:
                     info.functions.add(stmt.name)
                     nid = node_id(module, stmt.name)
                     self.graph.add_node(nid, module=module, qualname=stmt.name,
-                                        kind="function")
+                                        kind="function", lineno=stmt.lineno,
+                                        end_lineno=stmt.end_lineno)
                     self._defs.append((module, stmt.name, stmt, None))
                 elif isinstance(stmt, ast.ClassDef):
                     methods: set[str] = set()
@@ -150,7 +151,8 @@ class CallGraphBuilder:
                             qual = f"{stmt.name}.{item.name}"
                             nid = node_id(module, qual)
                             self.graph.add_node(nid, module=module, qualname=qual,
-                                                kind="method")
+                                                kind="method", lineno=item.lineno,
+                                                end_lineno=item.end_lineno)
                             self._defs.append((module, qual, item, stmt.name))
                     info.classes[stmt.name] = methods
 

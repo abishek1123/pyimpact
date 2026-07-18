@@ -150,11 +150,13 @@ def build_prompt(target: str, evidence: list[Evidence]) -> str:
 # --- Gemini backend --------------------------------------------------------
 
 def gemini_generate(prompt: str, *, api_key: str | None = None,
-                    model: str | None = None) -> str:
-    """Call Gemini and return the raw text response (expected to be JSON).
+                    model: str | None = None, json_mode: bool = True) -> str:
+    """Call Gemini and return the raw text response.
 
-    Imported lazily so the rest of the module works without google-genai
-    installed. Raises RuntimeError with actionable guidance if no key is set.
+    ``json_mode`` requests a JSON response (used by the explainer); set it False
+    for free-text (used by the summarizer). Imported lazily so the rest of the
+    module works without google-genai installed. Raises RuntimeError with
+    actionable guidance if no key is set.
     """
     key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not key:
@@ -172,10 +174,13 @@ def gemini_generate(prompt: str, *, api_key: str | None = None,
         ) from exc
 
     client = genai.Client(api_key=key)
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json" if json_mode else "text/plain"
+    )
     resp = client.models.generate_content(
         model=model or os.getenv("GEMINI_MODEL", DEFAULT_MODEL),
         contents=prompt,
-        config=types.GenerateContentConfig(response_mime_type="application/json"),
+        config=config,
     )
     return resp.text or ""
 
