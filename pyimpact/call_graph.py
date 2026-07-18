@@ -198,7 +198,12 @@ class CallGraphBuilder:
                                             class_ctx, methods)
                 if target is not None and self.graph.has_node(target) \
                         and target != src:
-                    self.graph.add_edge(src, target)
+                    # Record every call-site line so downstream layers (e.g. the
+                    # AI explainer) can ground "A calls B" in concrete locations.
+                    if self.graph.has_edge(src, target):
+                        self.graph.edges[src, target]["linenos"].append(call.lineno)
+                    else:
+                        self.graph.add_edge(src, target, linenos=[call.lineno])
 
     def _resolve_call(self, func: ast.AST, info: _ModuleInfo,
                       known_modules: set[str], class_ctx: Optional[str],

@@ -55,8 +55,9 @@ def build_unified_graph(repo_path: str) -> nx.DiGraph:
 
     for fn, data in call_graph.nodes(data=True):
         g.add_node(fn, **data)  # kind is already function/method
-    for u, v in call_graph.edges():
-        g.add_edge(u, v, kind="call")
+    for u, v, data in call_graph.edges(data=True):
+        # Preserve call metadata (e.g. linenos) alongside the kind tag.
+        g.add_edge(u, v, kind="call", **data)
 
     # Bridge granularities: a module depends on each function it defines.
     for fn, data in call_graph.nodes(data=True):
@@ -111,6 +112,7 @@ class Affected:
     kind: str      # module | function | method
     distance: int  # hops from the target (1 = direct dependent)
     via: str       # edge kind connecting it toward the target: call/import/contains
+    toward: str = ""  # the next node on the path toward the target (BFS parent)
 
 
 def find_impact(graph: nx.DiGraph, target_node: str) -> list[Affected]:
@@ -121,6 +123,7 @@ def find_impact(graph: nx.DiGraph, target_node: str) -> list[Affected]:
     """
     distance = {target_node: 0}
     via: dict[str, str] = {}
+    toward: dict[str, str] = {}
     queue = deque([target_node])
 
     while queue:
@@ -129,6 +132,7 @@ def find_impact(graph: nx.DiGraph, target_node: str) -> list[Affected]:
             if pred not in distance:
                 distance[pred] = distance[node] + 1
                 via[pred] = graph.edges[pred, node].get("kind", "")
+                toward[pred] = node
                 queue.append(pred)
 
     results = [
@@ -137,6 +141,7 @@ def find_impact(graph: nx.DiGraph, target_node: str) -> list[Affected]:
             kind=graph.nodes[n].get("kind", "unknown"),
             distance=distance[n],
             via=via[n],
+            toward=toward[n],
         )
         for n in distance
         if n != target_node
