@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]   # full versions only; moving tags like v1 are skipped
 
 permissions:
   contents: read
