@@ -90,3 +90,28 @@ def test_is_test_path():
     assert is_test_path("conftest.py")
     assert not is_test_path("pkg/testing_utils.py")
     assert not is_test_path("pkg/contest.py")
+
+
+def test_namespace_subpackage_inside_regular_package(tmp_path):
+    # flask/sansio/ has no __init__.py but lives inside the regular package flask/.
+    repo = make_repo(tmp_path, {
+        "src/flask/__init__.py": "",
+        "src/flask/sansio/app.py": "",
+        "tests/test_x.py": "",
+    })
+    assert set(RepoIndex(repo).files) == {"flask", "flask.sansio.app", "tests.test_x"}
+
+
+def test_import_entries_flag_load_time(tmp_path):
+    repo = make_repo(tmp_path, {"m.py": """
+        import os
+        from typing import TYPE_CHECKING
+        if TYPE_CHECKING:
+            import json
+
+        def f():
+            import csv
+    """})
+    entries = RepoIndex(repo).files["m"].import_entries
+    flags = {node.names[0].name: load_time for node, load_time in entries}
+    assert flags == {"os": True, "TYPE_CHECKING": True, "json": False, "csv": False}

@@ -29,3 +29,8 @@ fixtures/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local tooling
+.claude/
+_site/
+pyimpact-graph.html

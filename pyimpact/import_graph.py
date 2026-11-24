@@ -61,17 +61,17 @@ def _longest_module_prefix(dotted: str, known_modules) -> str | None:
     return None
 
 
-def _imports_with_lines(nodes):
-    """Yield ``(dotted_name, lineno)`` for each import statement in ``nodes``."""
-    for node in nodes:
+def _imports_with_lines(entries):
+    """Yield ``(dotted_name, lineno, load_time)`` for each imported name."""
+    for node, load_time in entries:
         if isinstance(node, ast.Import):
             for alias in node.names:
-                yield alias.name, node.lineno
+                yield alias.name, node.lineno, load_time
         elif isinstance(node, ast.ImportFrom):
             base = "." * node.level + (node.module or "")
             for alias in node.names:
                 sep = "." if base and not base.endswith(".") else ""
-                yield f"{base}{sep}{alias.name}", node.lineno
+                yield f"{base}{sep}{alias.name}", node.lineno, load_time
 
 
 def build_import_graph(repo, exclude=()) -> nx.DiGraph:
@@ -79,7 +79,9 @@ def build_import_graph(repo, exclude=()) -> nx.DiGraph:
 
     ``repo`` is a path or a ``RepoIndex``. Nodes are dotted module names with
     ``path``/``rel_path``/``is_test`` attributes; edge ``A -> B`` (``linenos`` =
-    the import statements' lines) means module A imports module B.
+    the import statements' lines; ``load_time`` = at least one of them runs when
+    A is imported, i.e. not only under ``if TYPE_CHECKING:`` or inside a
+    function) means module A imports module B.
     """
     index: RepoIndex = ensure_index(repo, exclude)
     known = index.modules
@@ -93,14 +95,16 @@ def build_import_graph(repo, exclude=()) -> nx.DiGraph:
         )
 
     for sf in index.parsed():
-        for dotted, lineno in _imports_with_lines(sf.imports):
+        for dotted, lineno, load_time in _imports_with_lines(sf.import_entries):
             if dotted.startswith("."):
                 dotted = resolve_relative(dotted, sf.module, sf.is_package)
             target = _longest_module_prefix(dotted, known)
             if target is None or target == sf.module:
                 continue
             if graph.has_edge(sf.module, target):
-                graph.edges[sf.module, target]["linenos"].append(lineno)
+                data = graph.edges[sf.module, target]
+                data["linenos"].append(lineno)
+                data["load_time"] = data["load_time"] or load_time
             else:
-                graph.add_edge(sf.module, target, linenos=[lineno])
+                graph.add_edge(sf.module, target, linenos=[lineno], load_time=load_time)
     return graph

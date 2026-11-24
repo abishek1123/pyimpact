@@ -16,7 +16,7 @@ call/virtual   B overrides the method A calls (dynamic dispatch) 0.60
 instantiate    A constructs class B                             0.90
 uses           A references class B (isinstance, annotations)   0.70
 inherits       class A subclasses B                             0.80
-member         class A defines method B                         0.60
+member         class A defines method B                         0.40
 contains       module A defines function/class B                1.00
 import         module A imports module B                        0.50
 =============  ===============================================  ======
@@ -47,7 +47,7 @@ EDGE_WEIGHTS = {
     "instantiate": 0.9,
     "uses": 0.7,
     "inherits": 0.8,
-    "member": 0.6,
+    "member": 0.4,
     "contains": 1.0,
     "import": 0.5,
 }
@@ -254,9 +254,15 @@ def affected_tests(graph: nx.DiGraph, affected) -> tuple[list[str], list[str]]:
         if pid:
             ids.append(pid)
         rel = graph.nodes[a.node].get("rel_path")
-        if rel and rel not in files:
+        if rel and rel not in files and _collectable(rel):
             files.append(rel)
     return sorted(set(ids)), sorted(files)
+
+
+def _collectable(rel_path: str) -> bool:
+    """Would pytest collect tests from this file by default?"""
+    name = rel_path.rsplit("/", 1)[-1]
+    return name.startswith("test_") or name.endswith("_test.py")
 
 
 def analyze(repo_path, target: str, exclude=()):

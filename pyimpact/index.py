@@ -109,9 +109,15 @@ def module_name_for(file_path: str, repo_path: str) -> str:
     file_path = os.path.abspath(file_path)
     top = None
     cur = os.path.dirname(file_path)
-    while _is_package_dir(cur):
-        top = cur
+    while True:
         parent = os.path.dirname(cur)
+        if _is_package_dir(cur):
+            top = cur
+        elif parent == cur or not _is_package_dir(parent):
+            # Neither this directory nor its parent is a regular package. (A
+            # directory *without* __init__.py whose parent is a package is a
+            # PEP 420 namespace sub-package, e.g. flask/sansio/, so we keep going.)
+            break
         if parent == cur:
             break
         cur = parent
@@ -138,25 +144,35 @@ def is_test_path(rel_path: str) -> bool:
 _STMT_BLOCKS = ("body", "orelse", "finalbody", "handlers", "cases")
 
 
-def import_nodes(tree: ast.AST) -> list:
-    """All ``import``/``from ... import`` statements in ``tree``, in source order.
+def _is_type_checking(test) -> bool:
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or \
+        (isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING")
 
-    Imports are statements, so only statement blocks are visited — expression
-    subtrees (the vast majority of nodes) are never touched.
+
+def import_nodes(tree: ast.AST) -> list:
+    """``(statement, load_time)`` for every import in ``tree``, in source order.
+
+    ``load_time`` is False for imports that don't run when the module is
+    imported: those under ``if TYPE_CHECKING:`` and those inside function
+    bodies (deferred imports, often written precisely to break a cycle). Only
+    load-time imports can form import cycles. Imports are statements, so only
+    statement blocks are visited; expression subtrees are never touched.
     """
-    found, stack = [], [tree]
+    found, stack = [], [(tree, False)]
     while stack:
-        node = stack.pop()
+        node, deferred = stack.pop()
         for name in _STMT_BLOCKS:
             block = getattr(node, name, None)
             if type(block) is not list:
                 continue
+            inner = deferred or isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or (
+                name == "body" and isinstance(node, ast.If) and _is_type_checking(node.test))
             for child in block:
                 if isinstance(child, (ast.Import, ast.ImportFrom)):
-                    found.append(child)
+                    found.append((child, not inner))
                 elif isinstance(child, ast.AST):
-                    stack.append(child)
-    found.sort(key=lambda n: (n.lineno, n.col_offset))
+                    stack.append((child, inner))
+    found.sort(key=lambda pair: (pair[0].lineno, pair[0].col_offset))
     return found
 
 
@@ -172,11 +188,15 @@ class SourceFile:
     _imports: list | None = None
 
     @property
-    def imports(self) -> list:
-        """Cached import statements of this file (empty if unparseable)."""
+    def import_entries(self) -> list:
+        """Cached ``(statement, load_time)`` imports (empty if unparseable)."""
         if self._imports is None:
             self._imports = import_nodes(self.tree) if self.tree is not None else []
         return self._imports
+
+    @property
+    def imports(self) -> list:
+        return [node for node, _ in self.import_entries]
 
 
 class RepoIndex:
@@ -193,6 +213,7 @@ class RepoIndex:
             raise NotADirectoryError(f"not a directory: {root}")
         self.exclude = tuple(exclude)
         self.files: dict[str, SourceFile] = {}
+        self._by_path: dict | None = None
         _is_package_dir.cache_clear()
 
         with paused_gc():
@@ -239,11 +260,9 @@ class RepoIndex:
         return (f for f in self.files.values() if f.tree is not None)
 
     def by_path(self, path: str) -> SourceFile | None:
-        path = os.path.normcase(os.path.abspath(path))
-        for f in self.files.values():
-            if os.path.normcase(f.path) == path:
-                return f
-        return None
+        if self._by_path is None:
+            self._by_path = {os.path.normcase(f.path): f for f in self.files.values()}
+        return self._by_path.get(os.path.normcase(os.path.abspath(path)))
 
 
 def ensure_index(repo, exclude=()) -> RepoIndex:

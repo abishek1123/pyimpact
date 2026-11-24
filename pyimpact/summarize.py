@@ -1,20 +1,16 @@
-"""Graph-grounded code summarization (Tier 2).
+"""Graph-grounded code summarization.
 
-This is deliberately NOT "summarize this function" — that's commoditized and
-against the project's positioning. Instead, a component is summarized *using its
-position in the dependency graph* as authoritative context: who calls it, what
-it calls, and how big its blast radius is. The result reads like:
+Deliberately NOT "summarize this function" — that is commoditized. A component
+is summarized *using its position in the dependency graph* as authoritative
+context: who depends on it, what it depends on, and how large its blast radius
+is. The result reads like:
 
-    "Validates a login request. Called by 3 places (auth_routes, admin_panel,
-     test_auth) and calls hash_password() and db.query(). 8 components depend on
-     it — moderate blast radius."
+    "Validates a login request. Called by route_login and route_admin, and calls
+     hash_password(). 8 components depend on it — a moderate blast radius."
 
-The graph facts (callers, callees, blast radius) are ground truth extracted
-deterministically. The model only turns the function's source plus those facts
-into prose; it is instructed not to invent relationships beyond the ones given.
-
-As with the explainer, the Gemini call is injectable so everything except the
-model wording is unit-testable with no key/network.
+The graph facts are extracted deterministically, including the blast-radius
+label, so the model never estimates risk itself; it only writes the prose and is
+told not to invent relationships. The model call is injectable for testing.
 """
 
 from __future__ import annotations
@@ -23,12 +19,8 @@ from dataclasses import dataclass, field
 
 import networkx as nx
 
-from .explain import gemini_generate
-from .impact import (
-    build_unified_graph,
-    find_impact,
-    resolve_target,
-)
+from . import llm
+from .impact import CALLABLE_KINDS, build_unified_graph, find_impact, resolve_target
 
 MAX_SOURCE_CHARS = 4000  # keep prompts bounded on large functions
 
@@ -39,11 +31,16 @@ class GraphContext:
 
     node: str
     kind: str
-    callers: list[str] = field(default_factory=list)   # who calls / imports this
-    callees: list[str] = field(default_factory=list)   # what this calls / imports
+    callers: list[str] = field(default_factory=list)   # who depends on it directly
+    callees: list[str] = field(default_factory=list)   # what it depends on directly
     dependents_total: int = 0                           # size of the blast radius
-    dependents_functions: int = 0                       # function/method dependents
-    source: str = ""                                    # the component's own source
+    dependents_functions: int = 0                       # callable dependents
+    high_risk: int = 0                                  # high-severity dependents
+    tests: int = 0                                      # test functions/files reached
+    blast_label: str = "none"                           # none | small | moderate | large
+    location: str = ""                                  # file:line
+    signature: str = ""
+    source: str = ""
 
 
 @dataclass
@@ -53,82 +50,89 @@ class Summary:
     text: str
 
 
-def _node_file(graph: nx.DiGraph, node: str) -> str | None:
-    data = graph.nodes[node]
-    if "path" in data:
-        return data["path"]
-    module = data.get("module")
-    if module and graph.has_node(module):
-        return graph.nodes[module].get("path")
-    return None
-
-
 def _node_source(graph: nx.DiGraph, node: str) -> str:
-    """Read a function/method's source using its recorded line span."""
     data = graph.nodes[node]
-    lineno = data.get("lineno")
-    end = data.get("end_lineno")
-    path = _node_file(graph, node)
-    if not (path and lineno):
+    path = data.get("path")
+    start, end = data.get("start_lineno") or data.get("lineno"), data.get("end_lineno")
+    if not path:
         return ""
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError:
         return ""
-    end = end or lineno
-    snippet = "".join(lines[lineno - 1:end])
-    return snippet[:MAX_SOURCE_CHARS]
+    if start:
+        lines = lines[start - 1:end or start]
+    return "".join(lines)[:MAX_SOURCE_CHARS]
 
 
-def _incoming(graph: nx.DiGraph, node: str, kind: str) -> list[str]:
-    """Predecessors connected to ``node`` by an edge of ``kind`` (who depends on it)."""
-    return sorted(u for u in graph.predecessors(node)
-                  if graph.edges[u, node].get("kind") == kind)
+def _neighbours(graph, node, kinds, incoming: bool) -> list[str]:
+    if incoming:
+        pairs = ((u, (u, node)) for u in graph.predecessors(node))
+    else:
+        pairs = ((v, (node, v)) for v in graph.successors(node))
+    return sorted(n for n, edge in pairs if graph.edges[edge].get("kind") in kinds)
 
 
-def _outgoing(graph: nx.DiGraph, node: str, kind: str) -> list[str]:
-    """Successors ``node`` connects to by an edge of ``kind`` (what it depends on)."""
-    return sorted(v for v in graph.successors(node)
-                  if graph.edges[node, v].get("kind") == kind)
+def blast_label(callable_dependents: int) -> str:
+    if callable_dependents == 0:
+        return "none"
+    if callable_dependents <= 3:
+        return "small"
+    if callable_dependents <= 15:
+        return "moderate"
+    return "large"
 
 
 def gather_context(graph: nx.DiGraph, node: str) -> GraphContext:
     """Collect the deterministic graph position of ``node``."""
-    kind = graph.nodes[node].get("kind", "unknown")
-    # Functions relate via call edges; modules via import edges.
-    edge_kind = "import" if kind == "module" else "call"
-    callers = _incoming(graph, node, edge_kind)
-    callees = _outgoing(graph, node, edge_kind)
+    data = graph.nodes[node]
+    kind = data.get("kind", "unknown")
+    if kind == "module":
+        callers = _neighbours(graph, node, {"import"}, incoming=True)
+        callees = _neighbours(graph, node, {"import"}, incoming=False)
+    elif kind == "class":
+        callers = _neighbours(graph, node, {"instantiate", "uses", "inherits"}, incoming=True)
+        callees = _neighbours(graph, node, {"inherits", "member"}, incoming=False)
+    else:
+        callers = _neighbours(graph, node, {"call"}, incoming=True)
+        callees = _neighbours(graph, node, {"call", "instantiate"}, incoming=False)
 
     affected = find_impact(graph, node)
-    dependents_functions = sum(
-        1 for a in affected if a.kind in ("function", "method"))
-
+    callable_dependents = sum(1 for a in affected if a.kind in CALLABLE_KINDS)
+    location = data.get("rel_path") or ""
+    if data.get("lineno"):
+        location += f":{data['lineno']}"
     return GraphContext(
         node=node,
         kind=kind,
         callers=callers,
         callees=callees,
         dependents_total=len(affected),
-        dependents_functions=dependents_functions,
-        source=_node_source(graph, node),
+        dependents_functions=callable_dependents,
+        high_risk=sum(1 for a in affected if a.severity == "high"),
+        tests=sum(1 for a in affected if a.is_test and a.kind in CALLABLE_KINDS),
+        blast_label=blast_label(callable_dependents),
+        location=location,
+        signature=data.get("signature", ""),
+        source=_node_source(graph, node) if kind != "module" else "",
     )
 
 
 _PROMPT = """\
 You are summarizing a Python {kind} for a developer, using its position in the \
 codebase's dependency graph as authoritative context. The graph facts below are \
-correct and were derived by static analysis — do NOT contradict them or invent \
-callers/callees that are not listed.
+correct and were derived by static analysis — do NOT contradict them and do NOT \
+invent callers or callees that are not listed.
 
-COMPONENT: {node}
+COMPONENT: {node}  ({location})
 
 GRAPH POSITION (ground truth):
-- Called by ({n_callers}): {callers}
-- Calls ({n_callees}): {callees}
-- Total components that depend on it (blast radius): {dependents_total} \
-({dependents_functions} of them functions/methods)
+- Depended on directly by ({n_callers}): {callers}
+- Depends directly on ({n_callees}): {callees}
+- Blast radius: {dependents_total} components depend on it, {dependents_functions} \
+of them functions/methods ({high_risk} high-severity, {tests} tests). \
+Classified as: {blast_label}.
 
 SOURCE:
 ```python
@@ -136,45 +140,55 @@ SOURCE:
 ```
 
 Write 2-4 sentences: first what the component does (from its source), then its \
-role in the codebase using the graph facts (who depends on it, what it depends \
-on, and whether its blast radius is small/moderate/large). Be concrete and \
-concise. Output plain prose only.
+role in the codebase using the graph facts — who depends on it, what it depends \
+on, and its blast radius exactly as classified above. Be concrete and concise. \
+Output plain prose only.
 """
+
+
+def _listing(names: list[str], limit: int = 20) -> str:
+    if not names:
+        return "nothing"
+    shown = ", ".join(names[:limit])
+    return shown + (f", and {len(names) - limit} more" if len(names) > limit else "")
 
 
 def build_summary_prompt(context: GraphContext) -> str:
     return _PROMPT.format(
         kind=context.kind,
         node=context.node,
+        location=context.location or "unknown location",
         n_callers=len(context.callers),
-        callers=", ".join(context.callers) or "nothing",
+        callers=_listing(context.callers),
         n_callees=len(context.callees),
-        callees=", ".join(context.callees) or "nothing",
+        callees=_listing(context.callees),
         dependents_total=context.dependents_total,
         dependents_functions=context.dependents_functions,
-        source=context.source or "(source unavailable)",
+        high_risk=context.high_risk,
+        tests=context.tests,
+        blast_label=context.blast_label.upper(),
+        source=context.source or "(module: see its imports above)",
     )
 
 
-def summarize_target(repo_path: str, target: str, *, generate_fn=None,
-                     model: str | None = None,
-                     api_key: str | None = None) -> Summary | None:
-    """Summarize ``target`` grounded in its graph position.
-
-    ``generate_fn(prompt) -> str`` is injectable; when omitted a Gemini-backed
-    (plain-text) function is used. Returns ``None`` if the target can't resolve.
-    """
-    graph = build_unified_graph(repo_path)
-    resolved = resolve_target(graph, target, repo_path)
-    if resolved is None:
-        return None
-
-    context = gather_context(graph, resolved)
-
+def summarize_node(graph: nx.DiGraph, node: str, *, generate_fn=None,
+                   model: str | None = None, api_key: str | None = None) -> Summary:
+    context = gather_context(graph, node)
     if generate_fn is None:
         def generate_fn(prompt: str) -> str:
-            return gemini_generate(
-                prompt, api_key=api_key, model=model, json_mode=False)
+            return llm.generate(prompt, api_key=api_key, model=model)
+    text = (generate_fn(build_summary_prompt(context)) or "").strip()
+    return Summary(node=node, context=context, text=text)
 
-    text = generate_fn(build_summary_prompt(context)).strip()
-    return Summary(node=resolved, context=context, text=text)
+
+def summarize_target(repo_path, target: str, *, generate_fn=None,
+                     model: str | None = None, api_key: str | None = None,
+                     exclude=()) -> Summary | None:
+    """Summarize ``target`` grounded in its graph position (``None`` if the
+    target can't be resolved)."""
+    graph = build_unified_graph(repo_path, exclude)
+    resolved = resolve_target(graph, target)
+    if resolved is None:
+        return None
+    return summarize_node(graph, resolved, generate_fn=generate_fn, model=model,
+                          api_key=api_key)
