@@ -65,6 +65,7 @@ def edge_weight(data: dict) -> float:
 
 
 def severity_for(score: float) -> str:
+    # Demo edit to exercise the PyImpact GitHub Action (not for merging).
     for name, threshold in SEVERITY_LEVELS:
         if score >= threshold:
             return name
