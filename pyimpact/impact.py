@@ -22,9 +22,9 @@ import         module A imports module B                        0.50
 =============  ===============================================  ======
 
 Impact = every node that can reach the target. ``distance`` is the fewest hops;
-``score`` is the strongest path's confidence — the product of edge weights along
-it, decayed by 0.85 per extra hop — and maps to a ``severity`` of high (≥ 0.7),
-medium (≥ 0.35) or low. So a direct caller is *high*, a file that merely imports
+``score`` and the reason (``via``/``toward``) come from the strongest path. Its
+confidence is the product of edge weights along it, decayed by 0.85 per extra
+hop, and maps to a ``severity`` of high (≥ 0.7), medium (≥ 0.35) or low. So a direct caller is *high*, a file that merely imports
 the module is *medium*, and something four import hops away is *low*.
 """
 
@@ -167,8 +167,8 @@ class Affected:
     node: str
     kind: str            # module | class | function | method
     distance: int        # fewest hops from a target (1 = direct dependent)
-    via: str             # kind of the edge leading toward the target
-    toward: str = ""     # next node on that shortest path (BFS parent)
+    via: str             # kind of the first edge on the strongest path to the target
+    toward: str = ""     # next node on that strongest path
     score: float = 1.0   # confidence of the strongest path, 0..1
     severity: str = "high"
     is_test: bool = False
@@ -214,6 +214,10 @@ def find_impact(graph: nx.DiGraph, targets, max_distance: int | None = None
             cand = -neg * edge_weight(graph.edges[pred, node]) * decay
             if cand > score.get(pred, 0.0):
                 score[pred] = cand
+                # The reason shown is the link on the path that set the score, so
+                # "why" always agrees with the severity.
+                via[pred] = graph.edges[pred, node].get("kind", "")
+                toward[pred] = node
                 heapq.heappush(heap, (-cand, pred))
 
     results = []
