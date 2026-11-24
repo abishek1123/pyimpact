@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PyImpact Playground</title>
+<meta name="description" content="See what a Python code change will break. PyImpact builds the call and import graph of any GitHub repository and traces the blast radius of a change, entirely in your browser.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='4' fill='%236e56cf'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%236e56cf' stroke-width='2.5' opacity='.6'/%3E%3Ccircle cx='16' cy='16' r='14' fill='none' stroke='%236e56cf' stroke-width='2' opacity='.3'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="./">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="4"/><circle cx="16" cy="16" r="9" class="r1"/><circle cx="16" cy="16" r="14" class="r2"/></svg>
+    <span>PyImpact</span>
+  </a>
+  <nav>
+    <a href="https://github.com/abishek1123/pyimpact#readme">Docs</a>
+    <a href="https://github.com/abishek1123/pyimpact#github-action">GitHub Action</a>
+    <a href="https://github.com/abishek1123/pyimpact" class="gh">GitHub</a>
+  </nav>
+</header>
+
+<main>
+  <section class="hero">
+    <h1>What breaks if I change this?</h1>
+    <p>PyImpact builds the call and import graph of a Python repository and traces the
+      <b>blast radius</b> of a change: every caller, subclass and test that depends on it,
+      ranked by risk. It runs entirely in your browser.</p>
+  </section>
+
+  <section class="card" id="source">
+    <form id="repo-form" autocomplete="off">
+      <label for="repo" class="label">Public GitHub repository</label>
+      <div class="row">
+        <input id="repo" name="repo" placeholder="owner/name or https://github.com/owner/name" spellcheck="false" required>
+        <button type="submit" class="primary" id="go">Analyze</button>
+      </div>
+      <div class="examples">
+        <span>Try</span>
+        <button type="button" class="chip" data-repo="psf/requests" data-target="requests.sessions.Session.request">psf/requests</button>
+        <button type="button" class="chip" data-repo="pallets/flask" data-target="flask.app.Flask.dispatch_request">pallets/flask</button>
+        <button type="button" class="chip" data-repo="pallets/click" data-target="click.core.Command.invoke">pallets/click</button>
+        <button type="button" class="chip" data-repo="bottlepy/bottle" data-target="bottle.Bottle.route">bottlepy/bottle</button>
+        <span class="sep">or</span>
+        <label class="chip file">Open a local folder<input type="file" id="folder" webkitdirectory directory multiple hidden></label>
+      </div>
+      <details class="advanced">
+        <summary>Options</summary>
+        <div class="grid">
+          <label>Branch, tag or commit <input id="ref" placeholder="default branch" spellcheck="false"></label>
+          <label>Subdirectory <input id="subdir" placeholder="whole repository" spellcheck="false"></label>
+          <label>Exclude (globs) <input id="exclude" placeholder="e.g. docs */migrations/*" spellcheck="false"></label>
+        </div>
+      </details>
+    </form>
+    <div id="progress" class="progress" hidden>
+      <div class="bar"><span id="bar"></span></div>
+      <p id="status">Starting…</p>
+    </div>
+    <p id="error" class="error" hidden></p>
+  </section>
+
+  <section id="results" hidden>
+    <div class="summary card">
+      <div>
+        <div class="repo-name" id="repo-name"></div>
+        <div class="muted" id="repo-meta"></div>
+      </div>
+      <div class="stats" id="stats"></div>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button role="tab" class="tab active" data-tab="impact">Blast radius</button>
+      <button role="tab" class="tab" data-tab="hotspots">Hotspots</button>
+      <button role="tab" class="tab" data-tab="search">Search</button>
+      <button role="tab" class="tab" data-tab="architecture">Architecture</button>
+    </div>
+
+    <div class="panel" id="tab-impact">
+      <form id="target-form" class="row" autocomplete="off">
+        <input id="target" list="targets" placeholder="Function, method, class or module, e.g. pkg.module.function" spellcheck="false" required>
+        <datalist id="targets"></datalist>
+        <select id="depth" title="How many hops to follow">
+          <option value="">All hops</option><option value="1">1 hop</option>
+          <option value="2">2 hops</option><option value="3">3 hops</option>
+        </select>
+        <button class="primary" type="submit">Trace impact</button>
+      </form>
+      <p class="muted hint" id="impact-hint">Pick a hotspot, search for a function, or type a dotted name.</p>
+      <div id="impact-out" hidden>
+        <div class="risk-row" id="risk-row"></div>
+        <div class="split">
+          <div class="table-wrap"><table id="affected"><thead><tr>
+            <th>Risk</th><th>Affected component</th><th>Why</th><th>Hops</th></tr></thead><tbody></tbody></table>
+            <p class="muted small" id="more"></p>
+          </div>
+          <div class="graph" id="impact-graph"></div>
+        </div>
+        <div class="card inner" id="tests-card" hidden>
+          <div class="row spaced"><b>Tests to run</b><button class="ghost" id="copy-tests" type="button">Copy</button></div>
+          <pre id="tests"></pre>
+        </div>
+        <details class="card inner ai">
+          <summary><b>Explain with AI</b> <span class="muted">— optional, uses your own Gemini key</span></summary>
+          <p class="muted small">The graph already decided what is affected. Gemini only phrases <i>why</i>, from
+            the edges, line numbers and source lines shown above. Your key stays in this tab's memory and is sent only to
+            Google's API.</p>
+          <form id="ai-form" class="row" autocomplete="off">
+            <input id="ai-key" type="password" placeholder="Gemini API key" autocomplete="off" required>
+            <input id="ai-model" value="gemini-3.5-flash-lite" spellcheck="false" title="Gemini model">
+            <button class="primary" type="submit">Explain top 15</button>
+          </form>
+          <p class="muted small" id="ai-status"></p>
+        </details>
+      </div>
+    </div>
+
+    <div class="panel" id="tab-hotspots" hidden>
+      <p class="muted">Functions whose change ripples furthest: ranked by how many production functions transitively call them.</p>
+      <div class="table-wrap"><table id="hotspots"><thead><tr>
+        <th>#</th><th>Function</th><th>Transitive callers</th><th>Direct</th><th>Location</th></tr></thead><tbody></tbody></table></div>
+      <h3>Import cycles</h3>
+      <ul id="cycles" class="mono"></ul>
+    </div>
+
+    <div class="panel" id="tab-search" hidden>
+      <form id="search-form" class="row" autocomplete="off">
+        <input id="query" placeholder="Describe what you're looking for, e.g. hash password" spellcheck="false" required>
+        <button class="primary" type="submit">Search</button>
+      </form>
+      <ol id="hits" class="hits"></ol>
+    </div>
+
+    <div class="panel" id="tab-architecture" hidden>
+      <p class="muted">Module import graph, coloured by top-level package and sized by how many modules import each one.</p>
+      <div class="graph tall" id="arch-graph"></div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <p>Your code is analyzed locally with <a href="https://pyodide.org">Pyodide</a>; nothing is uploaded. Source files are
+    downloaded straight from GitHub. <span id="version"></span></p>
+  <p>Prefer the terminal or CI? <code>pip install "pyimpact-cli @ git+https://github.com/abishek1123/pyimpact"</code> ·
+    <a href="https://github.com/abishek1123/pyimpact">GitHub</a></p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.9/standalone/umd/vis-network.min.js"></script>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.28.3/full/pyodide.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

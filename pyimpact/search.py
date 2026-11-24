@@ -23,7 +23,6 @@ import hashlib
 import math
 import os
 import re
-import sqlite3
 from collections import Counter
 from dataclasses import dataclass
 
@@ -188,6 +187,8 @@ class EmbeddingCache:
     """content-hash -> vector, in SQLite (stdlib), so re-runs are free."""
 
     def __init__(self, path: str | None = None):
+        import sqlite3   # lazy: not available by default in browser (Pyodide) builds
+
         self.path = path or default_cache_path()
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         self.db = sqlite3.connect(self.path)

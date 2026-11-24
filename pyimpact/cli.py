@@ -298,7 +298,8 @@ def search_cmd(repo, query, top, semantic, include_tests, model, fmt, exclude):
     for i, h in enumerate(hits, 1):
         loc = f"{h.file}:{h.line}" if h.line else (h.file or "")
         click.echo(f"{i:>2}. {click.style(h.node, bold=True)}{h.signature if h.kind != 'class' else ''}")
-        click.secho(f"    {h.kind} | {loc}" + (f" | {h.doc}" if h.doc else ""), dim=True)
+        doc = h.doc if len(h.doc) <= 100 else h.doc[:97] + "..."
+        click.secho(f"    {h.kind} | {loc}" + (f" | {doc}" if doc else ""), dim=True)
 
 
 @cli.command("visualize")

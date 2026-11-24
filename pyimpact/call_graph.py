@@ -190,7 +190,7 @@ def _short(text: str | None, limit: int) -> str:
     if not text:
         return ""
     text = " ".join(text.split())
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+    return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
 def _signature(fdef) -> str:

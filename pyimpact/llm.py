@@ -75,7 +75,7 @@ def _client(api_key: str | None):
     try:
         from google import genai
     except ImportError as exc:
-        raise LLMError("The AI features need google-genai: pip install 'pyimpact-cli[ai]'") from exc
+        raise LLMError("The AI features need google-genai: pip install google-genai numpy") from exc
     return genai.Client(api_key=key)
 
 

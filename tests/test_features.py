@@ -267,3 +267,25 @@ def test_deferred_and_type_checking_imports_are_not_cycles(tmp_path):
     assert g.has_edge("b", "a")                 # still a dependency for impact
     assert g.edges["b", "a"]["load_time"] is False
     assert import_cycles(g) == []
+
+
+def test_ci_glue_writes_outputs_and_gates(graph, tmp_path, monkeypatch):
+    from pyimpact import ci
+
+    affected = find_impact(graph, "shop.security:hash_password")
+    payload = build_payload(graph, mode="diff", targets=[target_dict(graph, "shop.security:hash_password", "modified")],
+                            affected=affected, base="changes since main")
+    report = tmp_path / "r.json"
+    report.write_text(json.dumps(payload), encoding="utf-8")
+    out, summary = tmp_path / "out.txt", tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    md = tmp_path / "r.md"
+    assert ci.main(["--json", str(report), "--markdown", str(md)]) == 0
+    assert ci.main(["--json", str(report), "--markdown", str(md), "--fail-on", "high"]) == 2
+    assert ci.main(["--json", str(report), "--markdown", str(md), "--fail-on", "breaking"]) == 0
+    before = out.read_text(encoding="utf-8")
+    assert ci.main(["--json", str(report), "--gate-only", "--fail-on", "high"]) == 2
+    assert out.read_text(encoding="utf-8") == before     # gate-only writes nothing
+    assert "high=" in out.read_text(encoding="utf-8")
+    assert summary.read_text(encoding="utf-8").startswith(MARKER)

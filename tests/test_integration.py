@@ -1,23 +1,13 @@
-"""Integration tests against real open-source repos.
+"""Integration tests against real open-source repositories.
 
-These run PyImpact's full pipeline over medium-sized real codebases and assert
-relationships that a careful human reading the source can confirm. They are the
-counterpart to the unit tests: the unit tests prove each stage is correct on
-hand-crafted inputs; these prove the whole thing produces sane results on code
-nobody wrote for the test.
+The whole pipeline runs over pinned releases of requests, flask, click and
+bottle — analysed from the *repository root*, exactly as a user would — and the
+assertions are relationships anyone can confirm by reading those projects'
+source. Unit tests prove each stage on hand-crafted inputs; these prove the
+result is right on code nobody wrote for the test.
 
-The repos are cloned into a gitignored ``fixtures/`` dir (see README /
-CONTRIBUTING for the clone commands). When the fixtures are absent — e.g. a
-fresh checkout or CI without them — every test in this module skips instead of
-failing, so the suite stays green without a network dependency.
-
-Clone commands::
-
-    mkdir fixtures && cd fixtures
-    git clone --depth 1 https://github.com/psf/requests.git
-    git clone --depth 1 https://github.com/pallets/flask.git
-    git clone --depth 1 https://github.com/pallets/click.git
-    git clone --depth 1 https://github.com/bottlepy/bottle.git
+Fetch the fixtures once with ``python scripts/fetch_fixtures.py``. When they are
+absent every test here skips, so the suite never needs the network.
 """
 
 from __future__ import annotations
@@ -26,85 +16,118 @@ import os
 
 import pytest
 
-from pyimpact.impact import build_unified_graph, find_impact, resolve_target
+from pyimpact.impact import affected_tests, build_unified_graph, find_impact
+from pyimpact.stats import import_cycles
 
 FIXTURES = os.path.join(os.path.dirname(__file__), os.pardir, "fixtures")
+_GRAPHS: dict = {}
 
 
-def _require(rel_path: str) -> str:
-    """Return an absolute fixture path, or skip the test if it's not present."""
-    path = os.path.abspath(os.path.join(FIXTURES, rel_path))
-    if not os.path.exists(path):
-        pytest.skip(f"fixture not cloned: {rel_path}")
-    return path
+def repo_graph(name: str):
+    path = os.path.abspath(os.path.join(FIXTURES, name))
+    if not os.path.isdir(path):
+        pytest.skip(f"fixture not cloned: {name} (run scripts/fetch_fixtures.py)")
+    if name not in _GRAPHS:
+        _GRAPHS[name] = build_unified_graph(path)
+    return _GRAPHS[name]
 
 
-def _impact_nodes(repo: str, target: str) -> set[str]:
-    g = build_unified_graph(repo)
-    resolved = resolve_target(g, target, repo)
-    assert resolved is not None, f"could not resolve {target!r} in {repo}"
-    return {a.node for a in find_impact(g, resolved)}
+def edge(g, a, b):
+    return g.edges[a, b] if g.has_edge(a, b) else None
 
 
-def _has_call_edge(repo: str, caller: str, callee: str) -> bool:
-    g = build_unified_graph(repo)
-    return g.has_edge(caller, callee) and \
-        g.edges[caller, callee].get("kind") == "call"
+def impacted(g, node):
+    return {a.node: a for a in find_impact(g, node)}
 
 
-# --- requests: HTTP-verb methods all delegate to self.request() ------------
+# --- requests 2.32.3 ----------------------------------------------------------------
 
-def test_requests_verb_methods_call_request():
-    repo = _require("requests/src")
-    impacted = _impact_nodes(repo, "requests.sessions.Session.request")
-    # Changing Session.request affects every verb shortcut that calls it.
+def test_requests_src_layout_named_from_repo_root():
+    g = repo_graph("requests")
+    assert g.has_node("requests.sessions")
+    assert not any(n.startswith("src.") for n in g.nodes)
+
+
+def test_requests_verb_methods_delegate_to_request():
+    g = repo_graph("requests")
     for verb in ("get", "post", "put", "delete", "head", "options", "patch"):
-        assert f"requests.sessions:Session.{verb}" in impacted
+        assert edge(g, f"requests.sessions:Session.{verb}",
+                    "requests.sessions:Session.request")["strength"] == "direct"
 
 
-def test_requests_get_calls_request_directly():
-    repo = _require("requests/src")
-    assert _has_call_edge(
-        repo,
-        "requests.sessions:Session.get",
-        "requests.sessions:Session.request",
-    )
+def test_requests_api_reaches_session_through_with_statement():
+    # api.request does `with sessions.Session() as session: session.request(...)`
+    g = repo_graph("requests")
+    assert g.has_edge("requests.api:request", "requests.sessions:Session.request")
+    assert g.has_edge("requests.api:request", "requests.sessions:Session")
 
 
-# --- flask: __call__ -> wsgi_app -> full_dispatch -> dispatch_request -------
-
-def test_flask_dispatch_chain_is_transitive():
-    repo = _require("flask/src")
-    impacted = _impact_nodes(repo, "flask.app.Flask.dispatch_request")
-    # The WSGI entrypoint transitively depends on dispatch_request.
-    assert "flask.app:Flask.full_dispatch_request" in impacted
-    assert "flask.app:Flask.wsgi_app" in impacted
-
-
-# --- click: __call__ -> main -> invoke -------------------------------------
-
-def test_click_command_main_calls_invoke():
-    repo = _require("click/src")
-    assert _has_call_edge(
-        repo, "click.core:Command.main", "click.core:Command.invoke"
-    )
+def test_requests_change_reaches_public_api_and_tests():
+    g = repo_graph("requests")
+    affected = impacted(g, "requests.sessions:Session.request")
+    assert affected["requests.api:get"].severity == "high"
+    ids, files = affected_tests(g, affected.values())
+    assert "tests/test_requests.py" in files
+    assert any(i.startswith("tests/test_requests.py::") for i in ids)
 
 
-# --- bottle: single-file, verb shortcuts call self.route() -----------------
+# --- flask 3.1.0 ----------------------------------------------------------------------
 
-def test_bottle_verb_methods_call_route():
-    repo = _require("bottle")
-    impacted = _impact_nodes(repo, "bottle.Bottle.route")
+def test_flask_wsgi_chain():
+    g = repo_graph("flask")
+    affected = impacted(g, "flask.app:Flask.dispatch_request")
+    assert affected["flask.app:Flask.full_dispatch_request"].distance == 1
+    assert affected["flask.app:Flask.wsgi_app"].distance == 2
+    assert affected["flask.app:Flask.__call__"].distance == 3
+    assert all(affected[n].severity == "high" for n in
+               ("flask.app:Flask.full_dispatch_request", "flask.app:Flask.wsgi_app"))
+
+
+def test_flask_namespace_subpackage_and_no_false_cycles():
+    g = repo_graph("flask")
+    assert g.has_node("flask.sansio.app")         # flask/sansio has no __init__.py
+    assert not any(n.startswith("src.") for n in g.nodes)
+    assert not [c for c in import_cycles(g) if c[0].startswith("flask")]
+
+
+def test_flask_inherited_method_resolves_to_base_class():
+    # Flask subclasses sansio.App; add_url_rule is defined on App.
+    g = repo_graph("flask")
+    assert "flask.sansio.app:App" in g.nodes["flask.app:Flask"]["bases"]
+    affected = impacted(g, "flask.sansio.app:App.add_url_rule")
+    assert any(n.startswith("tests.") for n in affected)
+
+
+# --- click 8.1.8 --------------------------------------------------------------------------
+
+def test_click_main_dispatches_virtually_to_overrides():
+    # BaseCommand.main calls self.invoke(ctx); Command and MultiCommand override it.
+    g = repo_graph("click")
+    assert edge(g, "click.core:BaseCommand.main", "click.core:BaseCommand.invoke")["strength"] == "direct"
+    assert edge(g, "click.core:BaseCommand.main", "click.core:Command.invoke")["strength"] == "virtual"
+    assert edge(g, "click.core:BaseCommand.main", "click.core:MultiCommand.invoke")["strength"] == "virtual"
+
+
+def test_click_overloads_point_at_implementation():
+    g = repo_graph("click")
+    node = g.nodes["click.core:BaseCommand.main"]
+    assert len(node["spans"]) == 3                 # two @overload stubs + implementation
+    assert node["lineno"] == 1014                  # the real `def main(` in click 8.1.8
+
+
+# --- bottle 0.13.2 -----------------------------------------------------------------------
+
+def test_bottle_verb_shortcuts_call_route():
+    g = repo_graph("bottle")
+    affected = impacted(g, "bottle:Bottle.route")
     for verb in ("get", "post", "put", "delete", "patch"):
-        assert f"bottle:Bottle.{verb}" in impacted
+        assert affected[f"bottle:Bottle.{verb}"].distance == 1
 
 
-def test_bottle_builds_nontrivial_graph():
-    repo = _require("bottle")
-    g = build_unified_graph(repo)
-    funcs = [n for n, d in g.nodes(data=True)
-             if d.get("kind") in ("function", "method")]
-    # Sanity: bottle's core is a big single module (plus its test suite); we
-    # should extract hundreds of callables and many resolved call edges.
-    assert len(funcs) > 100
-    assert g.number_of_edges() > 100
+def test_all_fixtures_build_cleanly():
+    for name in ("requests", "flask", "click", "bottle"):
+        g = repo_graph(name)
+        callables = sum(1 for _, d in g.nodes(data=True) if d.get("kind") in ("function", "method"))
+        assert callables > 200, name
+        calls = sum(1 for *_, d in g.edges(data=True) if d.get("kind") == "call")
+        assert calls > 200, name

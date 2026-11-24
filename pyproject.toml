@@ -1,27 +1,67 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pyimpact"
-version = "0.1.0"
-description = "Static change-impact analysis for Python codebases via AST, import and call graphs."
+name = "pyimpact-cli"
+dynamic = ["version"]
+description = "Predict what a Python code change will break: static call/import-graph impact analysis for code review and CI."
 readme = "README.md"
-requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Abishek" }]
+requires-python = ">=3.10"
 dependencies = [
     "networkx>=3.0",
-    "click>=8.0",
+    "click>=8.1",
+]
+keywords = [
+    "static-analysis", "impact-analysis", "call-graph", "dependency-graph", "ast",
+    "code-review", "blast-radius", "test-selection", "refactoring", "ci",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
-ai = ["google-genai>=0.3"]
+ai = ["google-genai>=1.0", "numpy>=1.24"]
+dev = ["pytest>=8", "ruff>=0.6", "build>=1.2", "twine>=5"]
+
+[project.urls]
+Homepage = "https://github.com/abishek1123/pyimpact"
+Playground = "https://abishek1123.github.io/pyimpact/"
+Repository = "https://github.com/abishek1123/pyimpact"
+Issues = "https://github.com/abishek1123/pyimpact/issues"
+Changelog = "https://github.com/abishek1123/pyimpact/blob/main/CHANGELOG.md"
 
 [project.scripts]
 pyimpact = "pyimpact.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "pyimpact.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["pyimpact*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["fixtures", "venv", "_site"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "SIM"]
+ignore = ["E501", "SIM108", "B905", "SIM905"]

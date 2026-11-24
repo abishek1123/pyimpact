@@ -1,0 +1,20 @@
+name: Impact report
+
+# PyImpact reviewing its own pull requests with the action in this repository.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  impact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: ./
+        with:
+          exclude: "fixtures"
