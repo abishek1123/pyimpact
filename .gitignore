@@ -19,6 +19,11 @@ dist/
 # Integration-test fixtures (cloned third-party repos, not part of this project)
 fixtures/
 
+# Secrets — API keys, never commit
+.env
+*.local
+
+
 # Editor / OS
 .vscode/
 .idea/

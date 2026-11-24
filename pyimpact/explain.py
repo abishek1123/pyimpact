@@ -73,7 +73,7 @@ def _source_line(path: str | None, lineno: int) -> str:
     if not path or lineno <= 0:
         return ""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             lines = f.readlines()
         if lineno <= len(lines):
             return lines[lineno - 1].strip()

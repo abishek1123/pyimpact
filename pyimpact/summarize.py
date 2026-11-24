@@ -72,7 +72,7 @@ def _node_source(graph: nx.DiGraph, node: str) -> str:
     if not (path and lineno):
         return ""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             lines = f.readlines()
     except OSError:
         return ""

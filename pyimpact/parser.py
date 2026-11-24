@@ -10,20 +10,28 @@ from __future__ import annotations
 
 import ast
 
+# Exceptions that mean "this file can't be analyzed" rather than "PyImpact has a
+# bug": invalid syntax (or syntax from a newer Python), undecodable bytes, null
+# bytes, or pathological nesting.
+PARSE_ERRORS = (SyntaxError, ValueError, UnicodeDecodeError, RecursionError,
+                MemoryError)
+
 
 def parse_file(file_path: str) -> ast.Module:
     """Parse a Python source file into an AST module node.
 
-    The ``filename`` is passed to ``ast.parse`` so that any ``SyntaxError``
-    carries the real path, which makes failures on real-world repos legible.
+    The file is read as bytes so ``ast.parse`` honours BOMs and PEP 263
+    ``# -*- coding: ... -*-`` declarations instead of assuming UTF-8. The
+    ``filename`` is passed through so a ``SyntaxError`` carries the real path,
+    which keeps failures on real-world repos legible.
     """
-    with open(file_path, "r", encoding="utf-8") as f:
+    with open(file_path, "rb") as f:
         source = f.read()
     return ast.parse(source, filename=file_path)
 
 
-def get_imports(file_path: str) -> list[str]:
-    """Return the dotted names imported by a file, in source order.
+def imports_from_tree(tree: ast.AST) -> list[str]:
+    """Return the dotted names imported anywhere in ``tree``.
 
     Both statement forms are flattened to strings:
 
@@ -31,25 +39,25 @@ def get_imports(file_path: str) -> list[str]:
     - ``from x import y`` / ``from x import y as z`` -> ``"x.y"``
     - ``from . import y`` (relative)          -> ``".y"``
     - ``from ..pkg import y``                 -> ``"..pkg.y"``
+    - ``from x import *``                     -> ``"x.*"``
 
     Relative imports keep their leading dots so callers can tell them apart
     from absolute ones; resolving those dots to concrete files is the import
     graph's job, not the parser's.
     """
-    tree = parse_file(file_path)
-
     imports: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 imports.append(alias.name)
         elif isinstance(node, ast.ImportFrom):
-            prefix = "." * node.level
-            module = node.module or ""
-            base = f"{prefix}{module}"
+            base = "." * node.level + (node.module or "")
             for alias in node.names:
-                # `from x import *` -> keep the `*` so it isn't silently dropped.
                 sep = "." if base and not base.endswith(".") else ""
                 imports.append(f"{base}{sep}{alias.name}")
-
     return imports
+
+
+def get_imports(file_path: str) -> list[str]:
+    """Parse ``file_path`` and return its imports (see ``imports_from_tree``)."""
+    return imports_from_tree(parse_file(file_path))

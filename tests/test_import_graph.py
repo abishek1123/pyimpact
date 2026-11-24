@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import textwrap
 
-import pytest
 
 from pyimpact.import_graph import (
     build_import_graph,

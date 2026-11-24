@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import textwrap
 
-from pyimpact.call_graph import build_call_graph, node_id
+from pyimpact.call_graph import build_call_graph
 
 
 def make_repo(tmp_path, files: dict[str, str]):
@@ -195,9 +195,8 @@ def test_method_calls_top_level_function(tmp_path):
     assert g.has_edge("m:C.run", "m:util")
 
 
-def test_instance_method_call_not_resolved(tmp_path):
-    # obj.method() where obj is a local var needs type inference -> intentionally
-    # NOT resolved. This locks in the documented limitation.
+def test_instance_method_call_via_local_inference(tmp_path):
+    # obj = C(); obj.target() -> local type inference resolves the method.
     repo = make_repo(
         tmp_path,
         {
@@ -208,6 +207,27 @@ def test_instance_method_call_not_resolved(tmp_path):
 
             def f():
                 obj = C()
+                return obj.target()
+            """,
+        },
+    )
+    g = build_call_graph(repo)
+    assert g.has_edge("m:f", "m:C.target")
+    assert g.edges["m:f", "m:C"]["kind"] == "instantiate"
+
+
+def test_untyped_parameter_stays_unresolved(tmp_path):
+    # Without an annotation or assignment there is no type to go on: the tool
+    # must not guess (no edge is better than an invented one).
+    repo = make_repo(
+        tmp_path,
+        {
+            "m.py": """
+            class C:
+                def target(self):
+                    pass
+
+            def f(obj):
                 return obj.target()
             """,
         },

@@ -206,3 +206,99 @@ def test_unified_graph_has_both_kinds(tmp_path):
     # module -> function containment edge exists
     assert g.has_edge("m", "m:f")
     assert g.edges["m", "m:f"]["kind"] == "contains"
+
+
+# --- scoring, severity, multi-target, tests ---------------------------------
+
+SCORING_REPO = {
+    "app/__init__.py": "",
+    "app/core.py": """
+    def target():
+        return 1
+
+    def direct():
+        return target()
+
+    def two_hops():
+        return direct()
+    """,
+    "app/other.py": """
+    import app.core
+
+    def unrelated():
+        return 2
+    """,
+    "tests/test_core.py": """
+    from app.core import direct
+
+    def test_direct():
+        assert direct() == 1
+
+    def helper():
+        return 0
+    """,
+}
+
+
+def test_severity_reflects_edge_strength(tmp_path):
+    repo = make_repo(tmp_path, SCORING_REPO)
+    _, affected = analyze(repo, "app.core:target")
+    by = {a.node: a for a in affected}
+    assert by["app.core:direct"].severity == "high"
+    assert by["app.core:direct"].score == 1.0
+    assert by["app.core:two_hops"].score < by["app.core:direct"].score
+    # A file that only imports the module is a weaker, medium-confidence signal.
+    assert by["app.other"].severity == "medium"
+    assert by["app.other"].via == "import"
+
+
+def test_affected_tests_are_flagged(tmp_path):
+    from pyimpact.impact import affected_tests
+
+    repo = make_repo(tmp_path, SCORING_REPO)
+    g = build_unified_graph(repo)
+    affected = find_impact(g, "app.core:target")
+    ids, files = affected_tests(g, affected)
+    assert ids == ["tests/test_core.py::test_direct"]
+    assert files == ["tests/test_core.py"]
+    assert all(a.is_test for a in affected if a.node.startswith("tests."))
+
+
+def test_multi_target_takes_closest(tmp_path):
+    repo = make_repo(tmp_path, SCORING_REPO)
+    g = build_unified_graph(repo)
+    affected = find_impact(g, ["app.core:target", "app.core:direct"])
+    nodes = {a.node: a for a in affected}
+    assert "app.core:direct" not in nodes          # targets are not "affected"
+    assert nodes["app.core:two_hops"].distance == 1
+
+
+def test_max_distance_limits_traversal(tmp_path):
+    repo = make_repo(tmp_path, SCORING_REPO)
+    g = build_unified_graph(repo)
+    affected = find_impact(g, "app.core:target", max_distance=1)
+    assert max(a.distance for a in affected) == 1
+
+
+def test_method_change_reaches_class_constructors_weakly(tmp_path):
+    repo = make_repo(tmp_path, {"m.py": """
+    class Cart:
+        def total(self):
+            return 0
+
+    def build():
+        return Cart()
+    """})
+    _, affected = analyze(repo, "m:Cart.total")
+    by = {a.node: a for a in affected}
+    # build() never calls total(), but holds a Cart: flagged, but not "high".
+    assert by["m:build"].severity != "high"
+    assert by["m:Cart"].via == "member"
+
+
+def test_suggest_targets(tmp_path):
+    from pyimpact.impact import suggest_targets
+
+    repo = make_repo(tmp_path, SCORING_REPO)
+    g = build_unified_graph(repo)
+    assert "app.core:direct" in suggest_targets(g, "wrong.module.direct")
