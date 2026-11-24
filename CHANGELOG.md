@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1 — 2026-11-24
+
+- Each result's reason ("calls X", "defines Y") now comes from the same path that set
+  its severity, so the explanation always agrees with the risk level.
+- Release workflow only runs for full version tags (the moving `v1` Action tag no
+  longer triggers it).
+
 ## 1.0.0 — 2026-11-24
 
 First public release.
